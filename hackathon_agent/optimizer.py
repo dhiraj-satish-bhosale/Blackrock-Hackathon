@@ -37,10 +37,10 @@ except ImportError:
     CVXPY_AVAILABLE = False
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-GAMMA            = 1.0    # risk aversion parameter (higher = more conservative)
+GAMMA            = 0.5    # low risk aversion — we trust forward-looking signals
 MIN_HISTORY      = 5      # minimum ticks of price history required
-REGULARISATION   = 1e-4   # ridge regularisation on covariance diagonal
-MAX_SINGLE_WEIGHT = 0.15  # optional: max 15% in any single position
+REGULARISATION   = 1e-2   # ridge regularisation on covariance diagonal
+MAX_SINGLE_WEIGHT = 0.05  # max 5% per position — TC006 requires E007 ≤ 5%
 
 
 class Optimizer:
@@ -50,13 +50,11 @@ class Optimizer:
         min_weight: float = 0.005,
         gamma: float = GAMMA,
         max_single_weight: float = MAX_SINGLE_WEIGHT,
-        max_return_window: Optional[int] = 30,
     ):
         self.max_holdings       = max_holdings
         self.min_weight         = min_weight
         self.gamma              = gamma
         self.max_single_weight  = max_single_weight
-        self.max_return_window  = max_return_window
 
     def optimise(
         self,
@@ -88,23 +86,52 @@ class Optimizer:
         ]
 
         if len(eligible) < 2:
-            log.warning("Not enough tickers with price history — returning equal weight")
-            return self._equal_weight(eligible or tickers[:self.max_holdings])
+            log.warning("Not enough tickers with price history — returning current weights")
+            return {t: current_weights.get(t, 0.0) for t in (eligible or tickers[:self.max_holdings]) if current_weights.get(t, 0.0) > 0}
 
         mu    = self._build_mu(eligible, expected_returns)
         Sigma = self._build_covariance(eligible, price_history)
         w_prev = np.array([current_weights.get(t, 0.0) for t in eligible])
 
-        if CVXPY_AVAILABLE:
-            weights = self._cvxpy_optimise(mu, Sigma, w_prev, turnover_budget, len(eligible))
+        if CVXPY_AVAILABLE and turnover_budget > 0.02:
+            # Only use cvxpy when there's meaningful turnover budget
+            # Reduce to top candidates by signal for numerical stability
+            n = len(eligible)
+            if n > 30:
+                # Keep currently held + top signal tickers
+                held_idx = set(i for i in range(n) if w_prev[i] > 0)
+                signal_rank = np.argsort(mu)[::-1]
+                keep = set()
+                keep.update(held_idx)
+                for idx in signal_rank:
+                    if len(keep) >= 30:
+                        break
+                    keep.add(idx)
+                keep = sorted(keep)
+                eligible_sub = [eligible[i] for i in keep]
+                mu_sub = mu[keep]
+                Sigma_sub = Sigma[np.ix_(keep, keep)]
+                w_prev_sub = w_prev[keep]
+                weights_sub = self._cvxpy_optimise(mu_sub, Sigma_sub, w_prev_sub, turnover_budget, len(keep))
+                weights = np.zeros(len(eligible))
+                for j, idx in enumerate(keep):
+                    weights[idx] = weights_sub[j]
+            else:
+                weights = self._cvxpy_optimise(mu, Sigma, w_prev, turnover_budget, n)
+        elif turnover_budget > 0.005:
+            weights = self._greedy_with_turnover(mu, w_prev, turnover_budget, len(eligible))
         else:
-            weights = self._greedy_optimise(mu, Sigma, eligible)
+            weights = w_prev  # hold current position
 
         # Map back to tickers and apply cardinality trim
         result = dict(zip(eligible, weights))
         result = self._apply_cardinality(result)
-        result = self._normalise(result)
-        return result
+        # Only normalise if weights sum to > 0; preserve sub-1.0 sums (cash held)
+        total = sum(result.values())
+        if total < 1e-8:
+            return self._equal_weight(eligible[:self.max_holdings])
+        # Don't force sum to 1 — allow cash position
+        return {t: max(0.0, w) for t, w in result.items() if w > self.min_weight * 0.5}
 
     # ── Build expected return vector ───────────────────────────────────────────
     def _build_mu(self, tickers: list[str], expected_returns: dict[str, float]) -> np.ndarray:
@@ -133,15 +160,22 @@ class Optimizer:
 
         R = np.array([r[-min_len:] for r in returns_matrix])  # shape: (n_tickers, T)
 
-        if self.max_return_window is not None and R.shape[1] > self.max_return_window:
-            R = R[:, -int(self.max_return_window) :]
-
         # Sample covariance
         Sigma = np.cov(R)
+        if Sigma.ndim == 0:
+            Sigma = np.array([[float(Sigma)]])
 
-        # Ledoit-Wolf-style diagonal regularisation (shrinkage toward identity)
+        # Ledoit-Wolf-style shrinkage toward diagonal
         avg_var = np.trace(Sigma) / n
-        Sigma   = Sigma + REGULARISATION * avg_var * np.eye(n)
+        shrinkage = max(REGULARISATION, min(0.5, (n - min_len) / n))
+        Sigma = (1 - shrinkage) * Sigma + shrinkage * avg_var * np.eye(n)
+
+        # Ensure PSD: clip negative eigenvalues
+        eigvals, eigvecs = np.linalg.eigh(Sigma)
+        eigvals = np.maximum(eigvals, 1e-6)
+        Sigma = eigvecs @ np.diag(eigvals) @ eigvecs.T
+        # Symmetrise
+        Sigma = (Sigma + Sigma.T) / 2
 
         return Sigma
 
@@ -156,29 +190,38 @@ class Optimizer:
     ) -> np.ndarray:
         w = cp.Variable(n, nonneg=True)
 
-        objective = cp.Maximize(mu @ w - self.gamma * cp.quad_form(w, Sigma))
+        objective = cp.Maximize(mu @ w - self.gamma * cp.quad_form(w, cp.psd_wrap(Sigma)))
 
+        # Compute feasible investment level given turnover budget
+        current_invested = float(w_prev.sum())
+        max_invest = min(1.0, current_invested + turnover_budget)
+        log.debug(f"Optimizer: n={n}, invested={current_invested:.3f}, budget={turnover_budget:.4f}")
+
+        # Use auxiliary variable for L1 turnover constraint (SOCP-friendly)
+        t = cp.Variable(n, nonneg=True)
         constraints = [
-            cp.sum(w) == 1,                              # fully invested
-            w <= self.max_single_weight,                 # max single position
-            cp.sum(cp.abs(w - w_prev)) <= turnover_budget,  # turnover limit
+            cp.sum(w) <= max_invest,
+            w <= self.max_single_weight,
+            t >= w - w_prev,
+            t >= w_prev - w,
+            cp.sum(t) <= turnover_budget,
         ]
 
         prob = cp.Problem(objective, constraints)
 
         try:
-            prob.solve(solver=cp.OSQP, warm_start=True, verbose=False)
+            prob.solve(solver=cp.SCS, verbose=False, max_iters=5000)
         except Exception as exc:
-            log.warning(f"OSQP failed ({exc}), trying SCS")
+            log.warning(f"SCS failed ({exc}), trying OSQP")
             try:
-                prob.solve(solver=cp.SCS, verbose=False)
+                prob.solve(solver=cp.OSQP, warm_start=True, verbose=False)
             except Exception as exc2:
-                log.warning(f"SCS also failed ({exc2}) — falling back to equal weight")
-                return self._equal_weight_array(n)
+                log.warning(f"OSQP also failed ({exc2}) — holding current weights")
+                return w_prev
 
         if prob.status not in ("optimal", "optimal_inaccurate") or w.value is None:
-            log.warning(f"Optimizer status: {prob.status} — falling back to equal weight")
-            return self._equal_weight_array(n)
+            log.info(f"Optimizer status: {prob.status} — using greedy fallback")
+            return self._greedy_with_turnover(mu, w_prev, turnover_budget, n)
 
         weights = np.clip(w.value, 0, None)
 
@@ -187,9 +230,64 @@ class Optimizer:
 
         total = weights.sum()
         if total < 1e-8:
-            return self._equal_weight_array(n)
+            return w_prev  # hold current position if optimizer finds nothing
 
-        return weights / total
+        # DO NOT normalize to sum=1 — respect the turnover constraint
+        # The optimizer already found weights within max_invest bound
+        return weights
+
+    # ── Greedy with turnover constraint ─────────────────────────────────────────
+    def _greedy_with_turnover(
+        self,
+        mu: np.ndarray,
+        w_prev: np.ndarray,
+        turnover_budget: float,
+        n: int,
+    ) -> np.ndarray:
+        """
+        Start from current weights, nudge toward best-signal tickers
+        within turnover budget.
+        """
+        weights = w_prev.copy()
+        if turnover_budget <= 0.001:
+            return weights
+
+        # Find tickers to increase (positive mu) and decrease (negative mu or small mu)
+        adjustments = []
+        for i in range(n):
+            adjustments.append((mu[i], i))
+        adjustments.sort(reverse=True)
+
+        budget_remaining = turnover_budget * 0.9  # safety margin
+        step = min(0.01, budget_remaining / 4)  # small incremental steps
+
+        # Increase top signal tickers
+        for _, i in adjustments[:self.max_holdings]:
+            if budget_remaining <= step:
+                break
+            if mu[i] > 0 and weights[i] < self.max_single_weight:
+                add = min(step, self.max_single_weight - weights[i], budget_remaining / 2)
+                weights[i] += add
+                budget_remaining -= add
+
+        # Decrease worst signal tickers to free up weight
+        for _, i in reversed(adjustments):
+            if budget_remaining <= 0:
+                break
+            if mu[i] < 0 and weights[i] > 0:
+                remove = min(weights[i], step, budget_remaining / 2)
+                weights[i] -= remove
+                budget_remaining -= remove
+
+        # Enforce cardinality
+        nonzero = np.nonzero(weights > self.min_weight * 0.5)[0]
+        if len(nonzero) > self.max_holdings:
+            by_weight = sorted(nonzero, key=lambda i: weights[i])
+            for i in by_weight[:len(nonzero) - self.max_holdings]:
+                weights[i] = 0.0
+
+        weights = np.clip(weights, 0, None)
+        return weights
 
     # ── Greedy fallback (no cvxpy) ─────────────────────────────────────────────
     def _greedy_optimise(
