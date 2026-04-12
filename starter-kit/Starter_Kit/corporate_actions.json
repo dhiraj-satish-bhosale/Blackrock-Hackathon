@@ -1,0 +1,112 @@
+[
+  {
+    "id": "CA004",
+    "type": "STOCK_SPLIT",
+    "ticker": "D002",
+    "tick": 0,
+    "split_ratio": 3,
+    "pre_split_price": 263.51,
+    "post_split_price": 87.84,
+    "description": "3-for-1 stock split effective at market open. Price divided by 3, shares multiplied by 3. DO NOT treat as a price crash.",
+    "in_sample": true
+  },
+  {
+    "id": "CA002",
+    "type": "DIVIDEND_DECLARATION",
+    "ticker": "B003",
+    "tick": null,
+    "dividend_per_share": null,
+    "description": "Special cash dividend declared. Exact tick and amount disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA001",
+    "type": "EARNINGS_SURPRISE",
+    "ticker": "A001",
+    "tick": null,
+    "surprise_pct": null,
+    "description": "Significant earnings beat. Expect strong price and volume reaction. Exact tick disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA003",
+    "type": "MANAGEMENT_CHANGE",
+    "ticker": "C005",
+    "tick": null,
+    "description": "Senior executive departure. Governance/ESG risk event. Exact tick disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA005",
+    "type": "MA_RUMOUR",
+    "ticker": "E007",
+    "tick": null,
+    "confirmed": false,
+    "description": "Unconfirmed acquisition rumour. High price spike expected but turnover constraints apply. Exact tick disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA006",
+    "type": "REGULATORY_FINE",
+    "ticker": "B008",
+    "tick": null,
+    "fine_amount_usd": null,
+    "description": "Material regulatory fine. ESG violation. Significant negative price impact expected. Exact tick disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA007",
+    "type": "INDEX_REBALANCE",
+    "ticker": "A005,B001",
+    "tick": null,
+    "description": "Both tickers added to a major index. Demand surge expected near rebalance date. Pre-positioning is rewarded. Exact tick disclosed during the live event.",
+    "in_sample": false
+  },
+  {
+    "id": "CA008",
+    "type": "EARNINGS_SURPRISE",
+    "ticker": "C002",
+    "tick": 22,
+    "surprise_pct": 6.2,
+    "price_impact": 0.062,
+    "vol_multiplier": 3.8,
+    "description": "Healthcare sector earnings beat +6.2% vs consensus. Analyst upgrades expected. Strong momentum signal \u2014 consider buying C002 within 5 ticks.",
+    "in_sample": true,
+    "expected_behaviour": "BUY C002 within 5 ticks of tick 22; momentum signal"
+  },
+  {
+    "id": "CA009",
+    "type": "DIVIDEND_DECLARATION",
+    "ticker": "D007",
+    "tick": 67,
+    "dividend_per_share": 0.85,
+    "price_impact": 0.018,
+    "vol_multiplier": 2.1,
+    "description": "Special cash dividend of $0.85/share declared by D007 (Energy sector). Must BUY before ex-date to receive dividend. Price typically rises toward ex-date as buyers accumulate.",
+    "in_sample": true,
+    "expected_behaviour": "BUY D007 before tick 67; factor $0.85/share yield into expected return"
+  },
+  {
+    "id": "CA010",
+    "type": "MANAGEMENT_CHANGE",
+    "ticker": "E004",
+    "tick": 240,
+    "description": "CFO resignation announced at E004 (Consumer Goods). Governance uncertainty. Negative price impact expected with elevated volatility over subsequent ticks. ESG governance flag.",
+    "price_impact": -0.047,
+    "vol_multiplier": 3.2,
+    "in_sample": false,
+    "expected_behaviour": "REDUCE or EXIT E004 within 10 ticks of tick 240"
+  },
+  {
+    "id": "CA011",
+    "type": "REGULATORY_FINE",
+    "ticker": "A009",
+    "tick": 325,
+    "fine_amount_usd": 210000000,
+    "price_impact": -0.055,
+    "vol_multiplier": 4.4,
+    "description": "Regulatory fine of $210M imposed on A009 (Technology) for data privacy violations. ESG governance breach. Significant negative price and volume impact. Exit or reduce position promptly.",
+    "in_sample": false,
+    "expected_behaviour": "EXIT or REDUCE A009 within 10 ticks of tick 325"
+  }
+]
